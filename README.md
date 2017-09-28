@@ -15,3 +15,9 @@ For GAIL, use
 ```
 python gail.py --env-name Hopper-v1 --expert-path hopper_expert_trajectories/
 ```
+
+For GAIL with Phase MLP architecture, use
+
+```
+python phase_gail.py --env-name Hopper-v1 --expert-path hopper_expert_trajectories/
+```
