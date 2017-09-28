@@ -18,7 +18,7 @@ import torchvision.transforms as T
 from torch.autograd import Variable
 
 #from models import Policy, Value, Reward, ActorCritic
-from phase_mlp_multilayer_new_fast import PMLP
+from phase_mlp import PMLP
 from replay_memory import Memory
 from load_expert_traj import Expert
 from running_state import ZFilter
