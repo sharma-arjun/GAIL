@@ -7,7 +7,7 @@ This repository contains a Pytorch implementation of Generalized Advantage Estim
 For GAE, use
 
 ```
-python main.py --env-name Hopper-v1
+python gae.py --env-name Hopper-v1
 ```
 
 For GAIL, use
