@@ -1,4 +1,4 @@
-# PyTorch implementation of PPO
+# PyTorch implementation of GAE and GAIL with PPO
 
 This repository contains a Pytorch implementation of Generalized Advantage Estimation (GAE) and Generative Adversarial Imitation Learning (GAIL) with Proximal Policy Optimization (PPO)
 
