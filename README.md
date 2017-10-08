@@ -13,11 +13,11 @@ python gae.py --env-name Hopper-v1
 For GAIL, use
 
 ```
-python gail.py --env-name Hopper-v1 --expert-path hopper_expert_trajectories/
+python gail.py --env-name Hopper-v1 --expert-path hopper_expert_trajectories/ --batch-size 20000 --num-expert-trajs 10 --optim-epochs 5 --num-episodes 2000
 ```
 
 For GAIL with Phase MLP architecture, use
 
 ```
-python phase_gail.py --env-name Hopper-v1 --expert-path hopper_expert_trajectories/
+python phase_gail.py --env-name Hopper-v1 --expert-path hopper_expert_trajectories/ --batch-size 20000 --num-expert-trajs 10 --optim-epochs 5 --num-episodes 2000
 ```
