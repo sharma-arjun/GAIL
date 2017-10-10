@@ -1,6 +1,7 @@
 import argparse
 import sys
 import math
+import random
 from collections import namedtuple
 from itertools import count
 
@@ -18,7 +19,8 @@ import torchvision.transforms as T
 from torch.autograd import Variable
 
 from models import Policy, Value, ActorCritic
-from replay_memory import Memory
+from gru import GRU
+from replay_memory import Memory, Memory_Ep
 from running_state import ZFilter
 
 # from utils import *
@@ -65,8 +67,8 @@ if args.use_joint_pol_val:
     ac_net = ActorCritic(num_inputs, num_actions)
     opt_ac = optim.Adam(ac_net.parameters(), lr=0.0003)
 else:
-    policy_net = Policy(num_inputs, num_actions)
-    old_policy_net = Policy(num_inputs, num_actions)
+    policy_net = GRU(num_inputs, num_actions)
+    old_policy_net = GRU(num_inputs, num_actions)
     value_net = Value(num_inputs)
     opt_policy = optim.Adam(policy_net.parameters(), lr=0.0003)
     opt_value = optim.Adam(value_net.parameters(), lr=0.0003)
@@ -140,90 +142,138 @@ def update_params_actor_critic(batch, i_episode):
     opt_ac.step()
 
 
-def update_params(batch, i_episode, optim_epochs, optim_batch_size):
-    rewards = torch.Tensor(batch.reward)
-    masks = torch.Tensor(batch.mask)
-    actions = torch.Tensor(np.concatenate(batch.action, 0))
-    states = torch.Tensor(batch.state)
-    values = value_net(Variable(states))
-
-    returns = torch.Tensor(actions.size(0),1)
-    deltas = torch.Tensor(actions.size(0),1)
-    advantages = torch.Tensor(actions.size(0),1)
-
+def update_params(batch_list, i_episode, optim_epochs, optim_batch_size):
 
     opt_value.lr = args.learning_rate*max(1.0 - float(i_episode)/args.num_episodes, 0)
     opt_policy.lr = args.learning_rate*max(1.0 - float(i_episode)/args.num_episodes, 0)
     clip_epsilon = args.clip_epsilon*max(1.0 - float(i_episode)/args.num_episodes, 0)
 
-    prev_return = 0
-    prev_value = 0
-    prev_advantage = 0
-    for i in reversed(range(rewards.size(0))):
-        returns[i] = rewards[i] + args.gamma * prev_return * masks[i]
-        deltas[i] = rewards[i] + args.gamma * prev_value * masks[i] - values.data[i]
-        advantages[i] = deltas[i] + args.gamma * args.tau * prev_advantage * masks[i]
-        prev_return = returns[i, 0]
-        prev_value = values.data[i, 0]
-        prev_advantage = advantages[i, 0]
+    rewards_list = []
+    masks_list = []
+    actions_list = []
+    states_list = []
+    values_list = []
 
-    targets = Variable(returns)
+    advantages_list = []
+    targets_list = []
 
-    advantages = (advantages - advantages.mean()) / advantages.std()
+    for batch in batch_list:
+        rewards = torch.Tensor(batch.reward)
+        rewards_list.append(rewards)
+        masks = torch.Tensor(batch.mask)
+        masks_list.append(masks)
+        actions = torch.Tensor(np.concatenate(batch.action, 0))
+        actions_list.append(actions)
+        states = torch.Tensor(batch.state)
+        states_list.append(states)
+        values = value_net(Variable(states))
+
+        returns = torch.Tensor(actions.size(0),1)
+        deltas = torch.Tensor(actions.size(0),1)
+        advantages = torch.Tensor(actions.size(0),1)
+
+        prev_return = 0
+        prev_value = 0
+        prev_advantage = 0
+        for i in reversed(range(rewards.size(0))):
+            returns[i] = rewards[i] + args.gamma * prev_return * masks[i]
+            deltas[i] = rewards[i] + args.gamma * prev_value * masks[i] - values.data[i]
+            advantages[i] = deltas[i] + args.gamma * args.tau * prev_advantage * masks[i]
+            prev_return = returns[i, 0]
+            prev_value = values.data[i, 0]
+            prev_advantage = advantages[i, 0]
+
+        targets = Variable(returns)
+
+        advantages_list.append(advantages)
+        targets_list.append(targets)
+
+    stacked_advantages = torch.cat(advantages_list, 0) # will need to compute across all ...
+    advantages_mean = stacked_advantages.mean()
+    advantages_std = stacked_advantages.std()
+
+    for i in range(len(advantages_list)):
+        advantages_list[i] = (advantages_list[i] - advantages_mean) / advantages_std
 
     # backup params after computing probs but before updating new params
     for old_policy_param, policy_param in zip(old_policy_net.parameters(), policy_net.parameters()):
         old_policy_param.data.copy_(policy_param.data)
 
-    optim_iters = int(math.ceil(args.batch_size/optim_batch_size))
+    optim_iters = int(math.ceil(len(batch_list)/optim_batch_size))
 
     for _ in range(optim_epochs):
-        perm = np.arange(actions.size(0))
-        np.random.shuffle(perm)
-        perm = torch.LongTensor(perm)
-        states = states[perm]
-        actions = actions[perm]
-        values = values[perm]
-        targets = targets[perm]
-        advantages = advantages[perm]
+        perm = range(len(batch_list))
+        random.shuffle(perm)
+        #perm = torch.LongTensor(perm)
+        #states = states[perm]
+        #actions = actions[perm]
+        #values = values[perm]
+        #targets = targets[perm]
+        #advantages = advantages[perm]
         cur_id = 0
         for _ in range(optim_iters):
-            cur_batch_size = min(optim_batch_size, actions.size(0) - cur_id)
-            state_var = Variable(states[cur_id:cur_id+cur_batch_size])
-            action_var = Variable(actions[cur_id:cur_id+cur_batch_size])
-            advantages_var = Variable(advantages[cur_id:cur_id+cur_batch_size])
-
-            action_means, action_log_stds, action_stds = policy_net(state_var)
-            log_prob_cur = normal_log_density(action_var, action_means, action_log_stds, action_stds)
-
-            action_means_old, action_log_stds_old, action_stds_old = old_policy_net(state_var)
-            log_prob_old = normal_log_density(action_var, action_means_old, action_log_stds_old, action_stds_old)
-
+            cur_batch_size = min(optim_batch_size, len(batch_list) - cur_id)
             opt_value.zero_grad()
-            value_var = value_net(state_var)
-            value_loss = (value_var - targets[cur_id:cur_id+cur_batch_size]).pow(2.).mean()
-            value_loss.backward()
-            opt_value.step()
-
             opt_policy.zero_grad()
-            ratio = torch.exp(log_prob_cur - log_prob_old) # pnew / pold
-            surr1 = ratio * advantages_var[:,0]
-            surr2 = torch.clamp(ratio, 1.0 - clip_epsilon, 1.0 + clip_epsilon) * advantages_var[:,0]
-            policy_surr = -torch.min(surr1, surr2).mean()
-            policy_surr.backward()
-            torch.nn.utils.clip_grad_norm(policy_net.parameters(), 40)
-            opt_policy.step()
 
+            for ep_i in perm[cur_id:cur_id+cur_batch_size]:
+                state_var = Variable(states_list[ep_i])
+                action_var = Variable(actions_list[ep_i])
+                advantages_var = Variable(advantages_list[ep_i])
+                targets_var = targets_list[ep_i]
+
+                ratio_list = []
+
+                for t in range(state_var.size(0)):
+                    action_means, action_log_stds, action_stds = policy_net(state_var[t,:].unsqueeze(0))
+                    log_prob_cur = normal_log_density(action_var[t,:].unsqueeze(0), action_means, action_log_stds, action_stds)
+
+                    action_means_old, action_log_stds_old, action_stds_old = old_policy_net(state_var[t,:].unsqueeze(0))
+                    log_prob_old = normal_log_density(action_var[t,:].unsqueeze(0), action_means_old, action_log_stds_old, action_stds_old)
+
+                    ratio_list.append(torch.exp(log_prob_cur - log_prob_old)) # pnew / pold
+
+                ratio = torch.stack(ratio_list, 0)
+                surr1 = ratio * advantages_var[:,0]
+                surr2 = torch.clamp(ratio, 1.0 - clip_epsilon, 1.0 + clip_epsilon) * advantages_var[:,0]
+                policy_surr = -torch.min(surr1, surr2).mean()
+                policy_surr.backward()
+
+                policy_net.reset()
+                old_policy_net.reset()
+
+                value_var = value_net(state_var)
+                value_loss = (value_var - targets_var).pow(2.).mean()
+                value_loss.backward()
+
+            #batch_state_var = Variable(torch.cat([states_list[ep_i] for ep_i in perm[cur_id:cur_id+cur_batch_size]],0))
+            #value_var = value_net(batch_state_var)
+            #targets_var = torch.cat([targets_list[ep_i] for ep_i in perm[cur_id:cur_id+cur_batch_size]],0)
+            #value_loss = (value_var - targets_var).pow(2.).mean()
+            #value_loss.backward()
+
+
+            # divide gradients by current batch size
+            for p in policy_net.parameters():
+                p.grad.data /= cur_batch_size
+
+            for p in value_net.parameters():
+                p.grad.data /= cur_batch_size
+
+            torch.nn.utils.clip_grad_norm(policy_net.parameters(), 40)
+
+            opt_value.step()
+            opt_policy.step()
             cur_id += cur_batch_size
 
 running_state = ZFilter((num_inputs,), clip=5)
 running_reward = ZFilter((1,), demean=False, clip=10)
 episode_lengths = []
 optim_epochs = 5
-optim_batch_size = 64
+optim_percentage = 0.05
 
 for i_episode in count(1):
-    memory = Memory()
+    ep_memory = Memory_Ep()
 
     num_steps = 0
     reward_batch = 0
@@ -231,8 +281,10 @@ for i_episode in count(1):
     while num_steps < args.batch_size:
         state = env.reset()
         state = running_state(state)
+        policy_net.reset()
 
         reward_sum = 0
+        memory = Memory()
         for t in range(10000): # Don't infinite loop while learning
             if args.use_joint_pol_val:
                 action = select_action_actor_critic(state)
@@ -256,12 +308,16 @@ for i_episode in count(1):
                 break
 
             state = next_state
+
+        ep_memory.push(memory)
         num_steps += (t-1)
         num_episodes += 1
         reward_batch += reward_sum
 
+    optim_batch_size = min(num_episodes, max(4,int(num_episodes*optim_percentage)))
     reward_batch /= num_episodes
-    batch = memory.sample()
+    batch = ep_memory.sample()
+
     if args.use_joint_pol_val:
         for _ in range(10):
             update_params_actor_critic(batch, i_episode)

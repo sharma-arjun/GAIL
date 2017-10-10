@@ -24,3 +24,17 @@ class Memory(object):
 
     def __len__(self):
         return len(self.memory)
+
+class Memory_Ep(object):
+    def __init__(self):
+        self.memory = []
+
+    def push(self, mem_obj):
+        self.memory.append(mem_obj)
+
+    def sample(self):
+        return [Transition(*zip(*m.memory)) for m in self.memory]
+
+    def sample_batch(self, batch_size):
+        random_batch = random.sample(self.memory, batch_size)
+        return [Transition(*zip(*m.memory)) for m in random_batch]
