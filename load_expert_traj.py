@@ -11,7 +11,7 @@ class Expert(object):
         self.pointer = 0
         self.n = len(os.listdir(folder))
         self.folder = folder
-        self.running_state = ZFilter((num_inputs,), clip=5)
+        #self.running_state = ZFilter((num_inputs,), clip=5)
 
     def push(self):
         """Saves a (state, action, phase, mask) tuple."""
@@ -45,9 +45,18 @@ class Expert(object):
 
         return Trajectory(*zip(*batch_list))
 
+    def sample_as_list(self, size=5):
+        ind = np.random.randint(self.n, size=size)
+        batch_list = []
+        for i in ind:
+            batch_list.append(self.memory[i])
+
+        return batch_list
+
     #def sample_batch(self, batch_size):
     #    random_batch = random.sample(self.memory, batch_size)
     #    return Transition(*zip(*random_batch))
 
     def __len__(self):
         return len(self.memory)
+

@@ -38,12 +38,6 @@ parser.add_argument('--tau', type=float, default=0.95, metavar='G',
                     help='gae (default: 0.95)')
 parser.add_argument('--learning-rate', type=float, default=3e-4, metavar='G',
                     help='gae (default: 3e-4)')
-# parser.add_argument('--l2_reg', type=float, default=1e-3, metavar='G',
-#                     help='l2 regularization regression (default: 1e-3)')
-# parser.add_argument('--max_kl', type=float, default=1e-2, metavar='G',
-#                     help='max kl value (default: 1e-2)')
-# parser.add_argument('--damping', type=float, default=1e-1, metavar='G',
-#                     help='damping (default: 1e-1)')
 parser.add_argument('--seed', type=int, default=1, metavar='N',
                     help='random seed (default: 1)')
 parser.add_argument('--batch-size', type=int, default=2048, metavar='N',
@@ -234,7 +228,7 @@ def update_params(gen_batch, expert_batch, i_episode, optim_epochs, optim_batch_
 
     # update value, reward and policy networks
     optim_iters = int(math.ceil(args.batch_size/optim_batch_size))
-    optim_batch_size_exp = int(math.ceil(expert_actions.size(0)/(optim_iters)))
+    optim_batch_size_exp = int(math.floor(expert_actions.size(0)/(optim_iters)))
 
     for _ in range(optim_epochs):
         perm = np.arange(actions.size(0))
