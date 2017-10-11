@@ -51,8 +51,8 @@ class GRU(nn.Module):
 
 		return self.scale*action_mean, action_log_std, action_std
 
-	def reset(self):
-		self.h1 = Variable(torch.zeros(self.batch_size, self.hidden_size), requires_grad=True).type(self.dtype)
+	def reset(self, batch_size=1):
+		self.h1 = Variable(torch.zeros(batch_size, self.hidden_size), requires_grad=True).type(self.dtype)
 		if self.n_layers == 2:
-			self.h2 = Variable(torch.zeros(self.batch_size, self.hidden_size), requires_grad=True).type(self.dtype)
+			self.h2 = Variable(torch.zeros(batch_size, self.hidden_size), requires_grad=True).type(self.dtype)
 

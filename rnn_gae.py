@@ -17,6 +17,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 import torchvision.transforms as T
 from torch.autograd import Variable
+from torch.nn.utils.rnn import pack_padded_sequence
 
 from models import Policy, Value, ActorCritic
 from gru import GRU
@@ -72,6 +73,32 @@ else:
     value_net = Value(num_inputs)
     opt_policy = optim.Adam(policy_net.parameters(), lr=0.0003)
     opt_value = optim.Adam(value_net.parameters(), lr=0.0003)
+
+def create_batch_inputs(batch_states_list, batch_actions_list, batch_advantages_list, batch_targets_list):
+    lengths = []
+    for states in batch_states_list:
+        lengths.append(states.size(0))
+
+    max_length = max(lengths)
+    batch_states = torch.zeros(len(batch_states_list), max_length, num_inputs)
+    batch_actions = torch.zeros(len(batch_actions_list), max_length, num_actions)
+    batch_advantages = torch.zeros(len(batch_advantages_list), max_length)
+    batch_mask = []
+
+    sorted_lengths, sorted_batch_states_list, sorted_batch_actions_list, sorted_batch_advantages_list = zip(*sorted(zip(lengths, batch_states_list, batch_actions_list, batch_advantages_list), key=lambda x: x[0], reverse=True))
+
+    count = 0
+    for l,s,a,ad in zip(sorted_lengths, sorted_batch_states_list, sorted_batch_actions_list, sorted_batch_advantages_list):
+        batch_states[count, 0:l, :] = s
+        batch_actions[count, 0:l, :] = a
+        batch_advantages[count, 0:l] = ad
+        batch_mask += range(count*max_length, count*max_length+l)
+        count += 1
+
+    batch_advantages.transpose_(0,1)
+    batch_mask = torch.LongTensor(batch_mask)
+        
+    return batch_states, batch_actions, batch_advantages, batch_mask, sorted_lengths
 
 def select_action(state):
     state = torch.from_numpy(state).unsqueeze(0)
@@ -213,38 +240,68 @@ def update_params(batch_list, i_episode, optim_epochs, optim_batch_size):
         cur_id = 0
         for _ in range(optim_iters):
             cur_batch_size = min(optim_batch_size, len(batch_list) - cur_id)
+            # reset nets
+            policy_net.reset(cur_batch_size)
+            old_policy_net.reset(cur_batch_size)
+            # zero gradients
             opt_value.zero_grad()
             opt_policy.zero_grad()
 
-            for ep_i in perm[cur_id:cur_id+cur_batch_size]:
-                state_var = Variable(states_list[ep_i])
-                action_var = Variable(actions_list[ep_i])
-                advantages_var = Variable(advantages_list[ep_i])
-                targets_var = targets_list[ep_i]
+            batch_states_list = [states_list[ep_i] for ep_i in perm[cur_id:cur_id+cur_batch_size]]
+            batch_actions_list = [actions_list[ep_i] for ep_i in perm[cur_id:cur_id+cur_batch_size]]
+            batch_advantages_list = [advantages_list[ep_i] for ep_i in perm[cur_id:cur_id+cur_batch_size]]
+            batch_targets_list = [targets_list[ep_i] for ep_i in perm[cur_id:cur_id+cur_batch_size]]
 
-                ratio_list = []
 
-                for t in range(state_var.size(0)):
-                    action_means, action_log_stds, action_stds = policy_net(state_var[t,:].unsqueeze(0))
-                    log_prob_cur = normal_log_density(action_var[t,:].unsqueeze(0), action_means, action_log_stds, action_stds)
+            batch_state_var = Variable(torch.cat(batch_states_list,0))
+            value_var = value_net(batch_state_var)
+            targets_var = torch.cat(batch_targets_list,0)
+            value_loss = (value_var - targets_var).pow(2.).mean()
+            value_loss.backward()
 
-                    action_means_old, action_log_stds_old, action_stds_old = old_policy_net(state_var[t,:].unsqueeze(0))
-                    log_prob_old = normal_log_density(action_var[t,:].unsqueeze(0), action_means_old, action_log_stds_old, action_stds_old)
+            padded_states, padded_actions, padded_advantages, padded_mask, lengths = create_batch_inputs(batch_states_list, batch_actions_list, batch_advantages_list, batch_targets_list)
+            state_var = Variable(padded_states)
+            action_var = Variable(padded_actions)
+            advantages_var = Variable(padded_advantages)
+            #packed_state_var = pack_padded_sequence(state_var, lengths, batch_first=True)
 
-                    ratio_list.append(torch.exp(log_prob_cur - log_prob_old)) # pnew / pold
+            ratio_list = []
+            for t in range(lengths[0]):
+                action_means, action_log_stds, action_stds = policy_net(state_var[:,t,:])
+                log_prob_cur = normal_log_density(action_var[:,t,:], action_means, action_log_stds, action_stds)
 
-                ratio = torch.stack(ratio_list, 0)
-                surr1 = ratio * advantages_var[:,0]
-                surr2 = torch.clamp(ratio, 1.0 - clip_epsilon, 1.0 + clip_epsilon) * advantages_var[:,0]
-                policy_surr = -torch.min(surr1, surr2).mean()
-                policy_surr.backward()
+                action_means_old, action_log_stds_old, action_stds_old = old_policy_net(state_var[:,t,:])
+                log_prob_old = normal_log_density(action_var[:,t,:], action_means_old, action_log_stds_old, action_stds_old)
 
-                policy_net.reset()
-                old_policy_net.reset()
+                ratio_list.append(torch.exp(log_prob_cur - log_prob_old)) # pnew / pold
 
-                value_var = value_net(state_var)
-                value_loss = (value_var - targets_var).pow(2.).mean()
-                value_loss.backward()
+            #for ep_i in perm[cur_id:cur_id+cur_batch_size]:
+            #    state_var = Variable(states_list[ep_i])
+            #    action_var = Variable(actions_list[ep_i])
+            #    advantages_var = Variable(advantages_list[ep_i])
+            #    targets_var = targets_list[ep_i]
+
+            #    ratio_list = []
+
+            #    for t in range(state_var.size(0)):
+            #        action_means, action_log_stds, action_stds = policy_net(state_var[t,:].unsqueeze(0))
+            #        log_prob_cur = normal_log_density(action_var[t,:].unsqueeze(0), action_means, action_log_stds, action_stds)
+
+            #        action_means_old, action_log_stds_old, action_stds_old = old_policy_net(state_var[t,:].unsqueeze(0))
+            #        log_prob_old = normal_log_density(action_var[t,:].unsqueeze(0), action_means_old, action_log_stds_old, action_stds_old)
+
+            #        ratio_list.append(torch.exp(log_prob_cur - log_prob_old)) # pnew / pold
+
+            ratio = torch.stack(ratio_list, 0)
+            surr1 = (ratio * advantages_var).view(-1)[padded_mask]
+            surr2 = (torch.clamp(ratio, 1.0 - clip_epsilon, 1.0 + clip_epsilon) * advantages_var).view(-1)[padded_mask]
+            policy_surr = -torch.min(surr1, surr2).mean() # true mean depends only on actual number of timesteps in batch
+            policy_surr.backward()
+
+
+            #value_var = value_net(state_var)
+            #value_loss = (value_var - targets_var).pow(2.).mean()
+            #value_loss.backward()
 
             #batch_state_var = Variable(torch.cat([states_list[ep_i] for ep_i in perm[cur_id:cur_id+cur_batch_size]],0))
             #value_var = value_net(batch_state_var)
@@ -254,11 +311,11 @@ def update_params(batch_list, i_episode, optim_epochs, optim_batch_size):
 
 
             # divide gradients by current batch size
-            for p in policy_net.parameters():
-                p.grad.data /= cur_batch_size
+            #for p in policy_net.parameters():
+            #    p.grad.data /= cur_batch_size
 
-            for p in value_net.parameters():
-                p.grad.data /= cur_batch_size
+            #for p in value_net.parameters():
+            #    p.grad.data /= cur_batch_size
 
             torch.nn.utils.clip_grad_norm(policy_net.parameters(), 40)
 
